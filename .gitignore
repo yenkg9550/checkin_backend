@@ -1,0 +1,40 @@
+# 環境變數（含 LINE Secret、JWT Secret 等，絕對不要上傳）
+.env
+.env.local
+.env.*
+
+# Python 虛擬環境
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# SQLite 本地資料庫
+*.db
+*.sqlite
+*.sqlite3
+
+# 打包產物
+*.egg-info/
+dist/
+build/
+
+# 編輯器
+.vscode/
+.idea/
+*.sw?
+
+# 系統檔
+.DS_Store
+Thumbs.db
+
+# Log
+*.log
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
