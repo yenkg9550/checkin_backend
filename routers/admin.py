@@ -230,7 +230,7 @@ async def export_monthly(
             elif ci:
                 status, bg = "未下班", CLR_PARTIAL
             else:
-                status, bg = "缺勤", CLR_ABSENT
+                status, bg = "未出勤", CLR_ABSENT
 
             # 計算工時
             work_hours = ""
