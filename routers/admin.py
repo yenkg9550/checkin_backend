@@ -241,14 +241,12 @@ async def export_monthly(
             ci = rec["clock_in"]  if rec else None
             co = rec["clock_out"] if rec else None
 
-            if is_weekend:
-                status, bg = "休", CLR_WEEKEND
-            elif ci and co:
+            if ci and co:
                 status, bg = "正常", CLR_PRESENT
             elif ci:
                 status, bg = "未下班", CLR_PARTIAL
             else:
-                status, bg = "未出勤", CLR_ABSENT
+                status, bg = "休息", CLR_WEEKEND
 
             # 計算工時
             work_hours = ""
