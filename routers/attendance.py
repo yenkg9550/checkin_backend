@@ -109,7 +109,8 @@ async def check_in(
                 is_valid = False
                 note = f"距離公司 {distance_m:.0f} 公尺，超出允許範圍 {cfg.office_radius_m:.0f} 公尺"
         else:
-            note = "未提供 GPS 座標"
+            is_valid = False
+            note = "未提供 GPS 座標，請開啟定位權限"
 
         if not is_valid:
             raise HTTPException(status_code=400, detail=note)
