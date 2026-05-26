@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from datetime import datetime, date
+from datetime import datetime, date as date_cls
 from database import get_db
 from models import Attendance, Employee, CheckType
 from schemas import CheckInRequest, AttendanceRecord
@@ -105,8 +105,8 @@ async def check_in(
         raise HTTPException(status_code=400, detail=note)
 
     # 避免同一天重複同類型打卡
-    today_start = datetime.combine(date.today(), datetime.min.time())
-    today_end = datetime.combine(date.today(), datetime.max.time())
+    today_start = datetime.combine(date_cls.today(), datetime.min.time())
+    today_end = datetime.combine(date_cls.today(), datetime.max.time())
     dup = await db.execute(
         select(Attendance).where(
             and_(
@@ -162,6 +162,32 @@ async def my_history(
     return result.scalars().all()
 
 
+@router.get("/me/by-date", response_model=list[AttendanceRecord])
+async def my_records_by_date(
+    date: str,          # YYYY-MM-DD
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """查詢自己指定日期的打卡紀錄"""
+    employee_id = int(user["sub"])
+    try:
+        target = date_cls.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD")
+    day_start = datetime.combine(target, datetime.min.time())
+    day_end   = datetime.combine(target, datetime.max.time())
+    result = await db.execute(
+        select(Attendance).where(
+            and_(
+                Attendance.employee_id == employee_id,
+                Attendance.checked_at >= day_start,
+                Attendance.checked_at <= day_end,
+            )
+        ).order_by(Attendance.checked_at)
+    )
+    return result.scalars().all()
+
+
 @router.get("/today", response_model=list[AttendanceRecord])
 async def today_status(
     user: dict = Depends(get_current_user),
@@ -169,8 +195,8 @@ async def today_status(
 ):
     """查詢今日打卡狀況"""
     employee_id = int(user["sub"])
-    today_start = datetime.combine(date.today(), datetime.min.time())
-    today_end = datetime.combine(date.today(), datetime.max.time())
+    today_start = datetime.combine(date_cls.today(), datetime.min.time())
+    today_end = datetime.combine(date_cls.today(), datetime.max.time())
     result = await db.execute(
         select(Attendance).where(
             and_(
