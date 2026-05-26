@@ -1,13 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, delete
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 from typing import Optional
+import io, calendar
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 from database import get_db
-from models import Attendance, Employee, Override, CheckType
+from models import Attendance, Employee, Override, CheckType, SystemSettings
 from schemas import AttendanceWithUser, OverrideRequest, EmployeeOut, SystemSettingsOut, SystemSettingsUpdate
-from models import SystemSettings
 from utils.jwt_helper import require_admin
+
+TZ_TAIPEI = timezone(timedelta(hours=8))
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -135,6 +141,148 @@ async def update_settings(
     await db.commit()
     await db.refresh(cfg)
     return cfg
+
+
+@router.get("/export/monthly")
+async def export_monthly(
+    year:  int,
+    month: int,
+    admin: dict = Depends(require_admin),
+    db:    AsyncSession = Depends(get_db),
+):
+    """匯出指定年月的打卡記錄為 Excel"""
+    # 該月範圍
+    last_day = calendar.monthrange(year, month)[1]
+    day_start = datetime(year, month, 1)
+    day_end   = datetime(year, month, last_day, 23, 59, 59)
+
+    # 查詢
+    result = await db.execute(
+        select(Attendance, Employee.display_name)
+        .join(Employee, Attendance.employee_id == Employee.id)
+        .where(and_(Attendance.checked_at >= day_start, Attendance.checked_at <= day_end))
+        .order_by(Employee.display_name, Attendance.checked_at)
+    )
+    rows = result.all()
+
+    # 整理成 {employee_name: {date: {clock_in, clock_out}}}
+    data: dict[str, dict[date, dict]] = {}
+    for att, name in rows:
+        local_dt = att.checked_at.replace(tzinfo=timezone.utc).astimezone(TZ_TAIPEI)
+        d = local_dt.date()
+        data.setdefault(name, {}).setdefault(d, {"clock_in": None, "clock_out": None})
+        if att.check_type == CheckType.clock_in and data[name][d]["clock_in"] is None:
+            data[name][d]["clock_in"] = local_dt
+        elif att.check_type == CheckType.clock_out:
+            data[name][d]["clock_out"] = local_dt
+
+    # 員工列表（查全部，包含沒打卡的）
+    emp_result = await db.execute(select(Employee).order_by(Employee.display_name))
+    all_employees = [e.display_name for e in emp_result.scalars().all()]
+
+    # ── 建立 Excel ────────────────────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"{year}年{month}月打卡記錄"
+
+    # 顏色
+    CLR_HEADER  = "1E293B"
+    CLR_DATE    = "334155"
+    CLR_PRESENT = "D1FAE5"
+    CLR_ABSENT  = "FEE2E2"
+    CLR_PARTIAL = "FEF3C7"
+    CLR_WEEKEND = "F1F5F9"
+    CLR_WHITE   = "FFFFFF"
+
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    WEEKDAY_ZH = ["一", "二", "三", "四", "五", "六", "日"]
+
+    # ── 標題行 ────────────────────────────────────────────────────────────────
+    headers = ["員工", "日期", "星期", "上班打卡", "下班打卡", "工時", "狀態"]
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font      = Font(bold=True, color=CLR_WHITE, size=11)
+        cell.fill      = PatternFill("solid", fgColor=CLR_HEADER)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border    = border
+    ws.row_dimensions[1].height = 22
+
+    # ── 資料行 ────────────────────────────────────────────────────────────────
+    row_idx = 2
+    for emp_name in all_employees:
+        emp_data = data.get(emp_name, {})
+        cur = date(year, month, 1)
+        end = date(year, month, last_day)
+        while cur <= end:
+            weekday = cur.weekday()
+            is_weekend = weekday >= 5
+            rec = emp_data.get(cur)
+
+            ci = rec["clock_in"]  if rec else None
+            co = rec["clock_out"] if rec else None
+
+            if is_weekend:
+                status, bg = "休", CLR_WEEKEND
+            elif ci and co:
+                status, bg = "正常", CLR_PRESENT
+            elif ci:
+                status, bg = "未下班", CLR_PARTIAL
+            else:
+                status, bg = "缺勤", CLR_ABSENT
+
+            # 計算工時
+            work_hours = ""
+            if ci and co:
+                delta = co - ci
+                h2 = int(delta.total_seconds() // 3600)
+                m2 = int((delta.total_seconds() % 3600) // 60)
+                work_hours = f"{h2}:{m2:02d}"
+
+            fill = PatternFill("solid", fgColor=bg)
+            values = [
+                emp_name,
+                cur.strftime("%Y/%m/%d"),
+                WEEKDAY_ZH[weekday],
+                ci.strftime("%H:%M") if ci else "—",
+                co.strftime("%H:%M") if co else "—",
+                work_hours or "—",
+                status,
+            ]
+            aligns = ["left", "center", "center", "center", "center", "center", "center"]
+            for col, (val, aln) in enumerate(zip(values, aligns), 1):
+                cell = ws.cell(row=row_idx, column=col, value=val)
+                cell.fill      = fill
+                cell.border    = border
+                cell.alignment = Alignment(horizontal=aln, vertical="center")
+                if col == 1:
+                    cell.font = Font(bold=True, size=10)
+                else:
+                    cell.font = Font(size=10)
+            ws.row_dimensions[row_idx].height = 18
+            row_idx += 1
+            cur += timedelta(days=1)
+
+    # ── 欄寬 ─────────────────────────────────────────────────────────────────
+    col_widths = [18, 14, 6, 12, 12, 8, 8]
+    for i, w in enumerate(col_widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # 凍結首行
+    ws.freeze_panes = "A2"
+
+    # ── 輸出 ──────────────────────────────────────────────────────────────────
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f"attendance_{year}_{month:02d}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.delete("/attendance/all")
