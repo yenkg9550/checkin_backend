@@ -165,16 +165,34 @@ async def export_monthly(
     )
     rows = result.all()
 
-    # 整理成 {employee_name: {date: {clock_in, clock_out}}}
-    data: dict[str, dict[date, dict]] = {}
+    # 先按員工分成 clock_in / clock_out 兩個清單
+    emp_ins:  dict[str, list] = {}
+    emp_outs: dict[str, list] = {}
     for att, name in rows:
         local_dt = att.checked_at.replace(tzinfo=timezone.utc).astimezone(TZ_TAIPEI)
-        d = local_dt.date()
-        data.setdefault(name, {}).setdefault(d, {"clock_in": None, "clock_out": None})
-        if att.check_type == CheckType.clock_in and data[name][d]["clock_in"] is None:
-            data[name][d]["clock_in"] = local_dt
-        elif att.check_type == CheckType.clock_out:
-            data[name][d]["clock_out"] = local_dt
+        if att.check_type == CheckType.clock_in:
+            emp_ins.setdefault(name, []).append(local_dt)
+        else:
+            emp_outs.setdefault(name, []).append(local_dt)
+
+    # 以上班時間的日期為主，找該次上班後 24 小時內第一筆下班
+    data: dict[str, dict] = {}
+    for name, ins in emp_ins.items():
+        ins.sort()
+        outs = sorted(emp_outs.get(name, []))
+        used = set()
+        data[name] = {}
+        for ci in ins:
+            d = ci.date()
+            data[name].setdefault(d, {"clock_in": None, "clock_out": None})
+            if data[name][d]["clock_in"] is None:
+                data[name][d]["clock_in"] = ci
+            # 找 ci 之後、24 小時內最近的未用下班紀錄
+            for i, co in enumerate(outs):
+                if i not in used and co > ci and (co - ci).total_seconds() <= 86400:
+                    data[name][d]["clock_out"] = co
+                    used.add(i)
+                    break
 
     # 員工列表（查全部，包含沒打卡的）
     emp_result = await db.execute(select(Employee).order_by(Employee.display_name))
