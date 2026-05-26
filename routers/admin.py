@@ -85,7 +85,7 @@ async def create_override(
         check_type=body.check_type,
         override_at=body.override_at,
         reason=body.reason,
-        approved_by=int(admin["sub"]),
+        approved_by=int(admin["sub"]) if admin["sub"].isdigit() else None,
     )
     db.add(override)
 
