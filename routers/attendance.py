@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from datetime import datetime, date as date_cls
 from database import get_db
-from models import Attendance, Employee, CheckType
+from models import Attendance, Employee, CheckType, SystemSettings
 from schemas import CheckInRequest, AttendanceRecord
 from utils.jwt_helper import get_current_user
 from utils.gps import haversine_distance
@@ -88,21 +88,31 @@ async def check_in(
     """打卡（上班 / 下班）"""
     employee_id = int(user["sub"])
 
+    # 讀取系統設定（GPS 開關 / 位置 / 半徑）
+    cfg_result = await db.execute(select(SystemSettings).where(SystemSettings.id == 1))
+    cfg = cfg_result.scalar_one_or_none()
+    if not cfg:
+        cfg = SystemSettings(id=1)
+        db.add(cfg)
+        await db.commit()
+        await db.refresh(cfg)
+
     # GPS 驗證
     distance_m = None
     is_valid = True
     note = None
 
-    if body.lat is not None and body.lng is not None:
-        distance_m = haversine_distance(body.lat, body.lng, settings.office_lat, settings.office_lng)
-        if distance_m > settings.office_radius_m:
-            is_valid = False
-            note = f"距離公司 {distance_m:.0f} 公尺，超出允許範圍 {settings.office_radius_m:.0f} 公尺"
-    else:
-        note = "未提供 GPS 座標"
+    if cfg.gps_enabled:
+        if body.lat is not None and body.lng is not None:
+            distance_m = haversine_distance(body.lat, body.lng, cfg.office_lat, cfg.office_lng)
+            if distance_m > cfg.office_radius_m:
+                is_valid = False
+                note = f"距離公司 {distance_m:.0f} 公尺，超出允許範圍 {cfg.office_radius_m:.0f} 公尺"
+        else:
+            note = "未提供 GPS 座標"
 
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=note)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=note)
 
     # 避免同一天重複同類型打卡
     today_start = datetime.combine(date_cls.today(), datetime.min.time())

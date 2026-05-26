@@ -5,7 +5,8 @@ from datetime import datetime, date
 from typing import Optional
 from database import get_db
 from models import Attendance, Employee, Override, CheckType
-from schemas import AttendanceWithUser, OverrideRequest, EmployeeOut
+from schemas import AttendanceWithUser, OverrideRequest, EmployeeOut, SystemSettingsOut, SystemSettingsUpdate
+from models import SystemSettings
 from utils.jwt_helper import require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -93,6 +94,47 @@ async def create_override(
     db.add(att)
     await db.commit()
     return {"success": True}
+
+
+@router.get("/settings", response_model=SystemSettingsOut)
+async def get_settings(
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """取得系統設定"""
+    result = await db.execute(select(SystemSettings).where(SystemSettings.id == 1))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        cfg = SystemSettings(id=1)
+        db.add(cfg)
+        await db.commit()
+        await db.refresh(cfg)
+    return cfg
+
+
+@router.put("/settings", response_model=SystemSettingsOut)
+async def update_settings(
+    body: SystemSettingsUpdate,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新系統設定"""
+    result = await db.execute(select(SystemSettings).where(SystemSettings.id == 1))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        cfg = SystemSettings(id=1)
+        db.add(cfg)
+    if body.gps_enabled is not None:
+        cfg.gps_enabled = body.gps_enabled
+    if body.office_lat is not None:
+        cfg.office_lat = body.office_lat
+    if body.office_lng is not None:
+        cfg.office_lng = body.office_lng
+    if body.office_radius_m is not None:
+        cfg.office_radius_m = body.office_radius_m
+    await db.commit()
+    await db.refresh(cfg)
+    return cfg
 
 
 @router.delete("/attendance/all")

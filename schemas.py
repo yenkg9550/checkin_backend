@@ -68,6 +68,23 @@ class OverrideRequest(BaseModel):
     reason: str
 
 
+class SystemSettingsOut(BaseModel):
+    gps_enabled: bool
+    office_lat: float
+    office_lng: float
+    office_radius_m: float
+
+    class Config:
+        from_attributes = True
+
+
+class SystemSettingsUpdate(BaseModel):
+    gps_enabled: Optional[bool] = None
+    office_lat: Optional[float] = None
+    office_lng: Optional[float] = None
+    office_radius_m: Optional[float] = None
+
+
 class EmployeeOut(BaseModel):
     id: int
     line_user_id: str

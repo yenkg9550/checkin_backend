@@ -47,6 +47,17 @@ class Attendance(Base):
     employee: Mapped["Employee"] = relationship(back_populates="attendance")
 
 
+class SystemSettings(Base):
+    """全域系統設定（單例，id 永遠是 1）"""
+    __tablename__ = "system_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    gps_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    office_lat: Mapped[float] = mapped_column(Float, default=23.4617157)
+    office_lng: Mapped[float] = mapped_column(Float, default=120.2494022)
+    office_radius_m: Mapped[float] = mapped_column(Float, default=200.0)
+
+
 class Override(Base):
     __tablename__ = "overrides"
 
