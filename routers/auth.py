@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from passlib.context import CryptContext
 from database import get_db
-from models import Employee
-from schemas import LineLoginRequest, TokenResponse, UserInfo, AdminLoginRequest, AdminTokenResponse
+from models import Employee, AdminUser
+from schemas import LineLoginRequest, TokenResponse, UserInfo, AdminLoginRequest, AdminTokenResponse, AdminUserInfo
 from utils.line_verify import verify_line_id_token
 from utils.jwt_helper import create_token
 from config import settings
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -53,10 +56,23 @@ async def login_with_line(body: LineLoginRequest, db: AsyncSession = Depends(get
 
 
 @router.post("/admin-login", response_model=AdminTokenResponse)
-async def admin_login(body: AdminLoginRequest):
-    """管理後台帳密登入"""
-    if body.username != settings.admin_username or body.password != settings.admin_password:
+async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db)):
+    """管理後台帳密登入（查詢 admin_users 資料表）"""
+    result = await db.execute(
+        select(AdminUser).where(AdminUser.username == body.username)
+    )
+    admin = result.scalar_one_or_none()
+
+    if not admin or not pwd_context.verify(body.password, admin.hashed_password):
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
 
-    token = create_token({"sub": "admin", "role": "admin"})
-    return AdminTokenResponse(access_token=token)
+    token = create_token({"sub": str(admin.id), "role": admin.role.value})
+    return AdminTokenResponse(
+        access_token=token,
+        user=AdminUserInfo(
+            id=admin.id,
+            username=admin.username,
+            display_name=admin.display_name,
+            role=admin.role,
+        ),
+    )

@@ -1,7 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from datetime import datetime
 from typing import Optional
-from models import CheckType, Role
+from models import CheckType, Role, AdminRole
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -28,9 +28,63 @@ class AdminLoginRequest(BaseModel):
     password: str
 
 
+class AdminUserInfo(BaseModel):
+    id:           int
+    username:     str
+    display_name: str
+    role:         AdminRole
+
+    class Config:
+        from_attributes = True
+
+
 class AdminTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    user: AdminUserInfo
+
+
+# ── Admin Management ──────────────────────────────────────────────────────────
+class AdminCreateRequest(BaseModel):
+    username:     str
+    password:     str
+    display_name: str
+
+    @field_validator("username")
+    @classmethod
+    def username_min_length(cls, v: str) -> str:
+        if len(v.strip()) < 3:
+            raise ValueError("帳號至少 3 個字元")
+        return v.strip()
+
+    @field_validator("password")
+    @classmethod
+    def password_min_length(cls, v: str) -> str:
+        if len(v) < 6:
+            raise ValueError("密碼至少 6 個字元")
+        return v
+
+
+class AdminPasswordUpdate(BaseModel):
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def pwd_min_length(cls, v: str) -> str:
+        if len(v) < 6:
+            raise ValueError("密碼至少 6 個字元")
+        return v
+
+
+class AdminUserOut(BaseModel):
+    id:           int
+    username:     str
+    display_name: str
+    role:         AdminRole
+    created_at:   datetime
+
+    class Config:
+        from_attributes = True
 
 
 # ── Attendance ────────────────────────────────────────────────────────────────

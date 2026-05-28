@@ -11,6 +11,11 @@ class Role(str, enum.Enum):
     admin = "admin"
 
 
+class AdminRole(str, enum.Enum):
+    super_admin = "super_admin"
+    admin = "admin"
+
+
 class CheckType(str, enum.Enum):
     clock_in = "clock_in"
     clock_out = "clock_out"
@@ -56,6 +61,21 @@ class SystemSettings(Base):
     office_lat: Mapped[float] = mapped_column(Float, default=23.4617157)
     office_lng: Mapped[float] = mapped_column(Float, default=120.2494022)
     office_radius_m: Mapped[float] = mapped_column(Float, default=200.0)
+
+
+class AdminUser(Base):
+    """管理後台帳號（獨立於 LINE 員工帳號）"""
+    __tablename__ = "admin_users"
+
+    id:              Mapped[int]           = mapped_column(primary_key=True)
+    username:        Mapped[str]           = mapped_column(String(64), unique=True, index=True)
+    hashed_password: Mapped[str]           = mapped_column(String(200))
+    display_name:    Mapped[str]           = mapped_column(String(100))
+    role:            Mapped[AdminRole]     = mapped_column(
+                                               SAEnum(AdminRole, native_enum=False),
+                                               default=AdminRole.admin,
+                                           )
+    created_at:      Mapped[datetime]      = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Override(Base):

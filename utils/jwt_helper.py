@@ -25,6 +25,12 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)
 
 
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    if user.get("role") != "admin":
+    if user.get("role") not in ("admin", "super_admin"):
         raise HTTPException(status_code=403, detail="需要管理員權限")
+    return user
+
+
+def require_super_admin(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="此操作需要超級管理員權限")
     return user

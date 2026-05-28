@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, delete
@@ -6,12 +6,19 @@ from datetime import datetime, date, timezone, timedelta
 from typing import Optional
 import io, calendar
 import openpyxl
+from passlib.context import CryptContext
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from database import get_db
-from models import Attendance, Employee, Override, CheckType, SystemSettings
-from schemas import AttendanceWithUser, OverrideRequest, EmployeeOut, SystemSettingsOut, SystemSettingsUpdate
-from utils.jwt_helper import require_admin
+from models import Attendance, Employee, Override, CheckType, SystemSettings, AdminUser
+from schemas import (
+    AttendanceWithUser, OverrideRequest, EmployeeOut,
+    SystemSettingsOut, SystemSettingsUpdate,
+    AdminCreateRequest, AdminPasswordUpdate, AdminUserOut,
+)
+from utils.jwt_helper import require_admin, require_super_admin
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 TZ_TAIPEI = timezone(timedelta(hours=8))
 
@@ -299,6 +306,87 @@ async def export_monthly(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 管理員帳號管理
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.get("/admins", response_model=list[AdminUserOut])
+async def list_admins(
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """取得所有管理員列表（super_admin 排最前）"""
+    result = await db.execute(
+        select(AdminUser).order_by(AdminUser.role.desc(), AdminUser.id)
+    )
+    return result.scalars().all()
+
+
+@router.post("/admins", response_model=AdminUserOut, status_code=201)
+async def create_admin(
+    body: AdminCreateRequest,
+    admin: dict = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """新增管理員（僅 super_admin 可執行）"""
+    existing = await db.execute(
+        select(AdminUser).where(AdminUser.username == body.username)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="帳號已存在")
+
+    new_admin = AdminUser(
+        username=body.username,
+        hashed_password=pwd_context.hash(body.password),
+        display_name=body.display_name,
+        role="admin",
+    )
+    db.add(new_admin)
+    await db.commit()
+    await db.refresh(new_admin)
+    return new_admin
+
+
+@router.delete("/admins/{admin_id}", status_code=204)
+async def delete_admin(
+    admin_id: int,
+    admin: dict = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """刪除管理員（僅 super_admin 可執行；super_admin 本身不可被刪除）"""
+    result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="管理員不存在")
+    if target.role.value == "super_admin":
+        raise HTTPException(status_code=400, detail="超級管理員帳號不可被刪除")
+
+    await db.delete(target)
+    await db.commit()
+
+
+@router.put("/admins/{admin_id}/password")
+async def change_admin_password(
+    admin_id: int,
+    body: AdminPasswordUpdate,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """修改管理員密碼（super_admin 可改任何人；一般管理員只能改自己）"""
+    current_id = int(admin["sub"]) if admin["sub"].isdigit() else None
+    if admin.get("role") != "super_admin" and current_id != admin_id:
+        raise HTTPException(status_code=403, detail="無權修改其他管理員的密碼")
+
+    result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="管理員不存在")
+
+    target.hashed_password = pwd_context.hash(body.new_password)
+    await db.commit()
+    return {"message": "密碼已更新"}
 
 
 @router.delete("/attendance/all")
