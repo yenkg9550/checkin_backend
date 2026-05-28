@@ -88,3 +88,14 @@ echo "✅ Commit 完成！"
 echo "   訊息：$COMMIT_MSG"
 echo ""
 git log --oneline -5
+
+# ── 6. git push ────────────────────────────────────────────
+if git remote get-url origin &>/dev/null; then
+  echo ""
+  echo "🚀 推送中..."
+  git push
+  echo "✅ Push 完成！"
+else
+  echo "⚠️  尚未設定 remote origin，跳過 push。"
+  echo "   請執行：git remote add origin <你的 repo URL>"
+fi
