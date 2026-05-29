@@ -389,6 +389,23 @@ async def change_admin_password(
     return {"message": "密碼已更新"}
 
 
+@router.delete("/employees/{employee_id}", status_code=204)
+async def delete_employee(
+    employee_id: int,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """刪除員工（同時清除其打卡與補打卡記錄）"""
+    result = await db.execute(select(Employee).where(Employee.id == employee_id))
+    emp = result.scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=404, detail="員工不存在")
+    await db.execute(delete(Override).where(Override.employee_id == employee_id))
+    await db.execute(delete(Attendance).where(Attendance.employee_id == employee_id))
+    await db.delete(emp)
+    await db.commit()
+
+
 @router.delete("/attendance/all")
 async def clear_all_attendance(
     admin: dict = Depends(require_admin),
