@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────
-# commit.sh  ─  CheckIn Backend（FastAPI + SQLAlchemy）
+# commit.sh  ─  checkin-backend（FastAPI + Python）
 # 用法：
 #   bash commit.sh            # 自動產生 commit message
 #   bash commit.sh "自訂訊息"  # 使用自訂 commit message
@@ -19,13 +19,14 @@ if ! git rev-parse --git-dir &>/dev/null; then
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
 .env
 .env.*
 !.env.example
 *.db
-*.sqlite3
-.DS_Store
 *.log
+.DS_Store
 EOF
     echo "✅ 已建立 .gitignore"
   fi
@@ -50,18 +51,19 @@ else
   DELETED=$(git diff --cached --name-only --diff-filter=D | wc -l | tr -d ' ')
 
   SCOPES=()
-  echo "$CHANGED_FILES" | grep -q "models\.py"              && SCOPES+=("models")
-  echo "$CHANGED_FILES" | grep -q "schemas\.py"             && SCOPES+=("schemas")
-  echo "$CHANGED_FILES" | grep -q "routers/auth\.py"        && SCOPES+=("auth")
-  echo "$CHANGED_FILES" | grep -q "routers/admin\.py"       && SCOPES+=("admin")
-  echo "$CHANGED_FILES" | grep -q "routers/attendance\.py"  && SCOPES+=("attendance")
-  echo "$CHANGED_FILES" | grep -q "routers/webhook\.py"     && SCOPES+=("webhook")
-  echo "$CHANGED_FILES" | grep -q "utils/"                  && SCOPES+=("utils")
-  echo "$CHANGED_FILES" | grep -q "main\.py"                && SCOPES+=("main")
-  echo "$CHANGED_FILES" | grep -q "database\.py"            && SCOPES+=("database")
-  echo "$CHANGED_FILES" | grep -q "config\.py"              && SCOPES+=("config")
-  echo "$CHANGED_FILES" | grep -q "requirements\.txt\|render\.yaml\|\.env\|commit\.sh\|\.gitignore" && SCOPES+=("infra")
-  echo "$CHANGED_FILES" | grep -q "\.md$"                   && SCOPES+=("docs")
+  echo "$CHANGED_FILES" | grep -q "routers/auth"       && SCOPES+=("auth")
+  echo "$CHANGED_FILES" | grep -q "routers/schedule"   && SCOPES+=("schedule")
+  echo "$CHANGED_FILES" | grep -q "routers/payroll"    && SCOPES+=("payroll")
+  echo "$CHANGED_FILES" | grep -q "routers/positions"  && SCOPES+=("positions")
+  echo "$CHANGED_FILES" | grep -q "routers/attendance" && SCOPES+=("attendance")
+  echo "$CHANGED_FILES" | grep -q "routers/line"       && SCOPES+=("line")
+  echo "$CHANGED_FILES" | grep -q "models\.py"         && SCOPES+=("models")
+  echo "$CHANGED_FILES" | grep -q "schemas\.py"        && SCOPES+=("schemas")
+  echo "$CHANGED_FILES" | grep -q "database\.py"       && SCOPES+=("database")
+  echo "$CHANGED_FILES" | grep -q "main\.py"           && SCOPES+=("main")
+  echo "$CHANGED_FILES" | grep -q "config\.py"         && SCOPES+=("config")
+  echo "$CHANGED_FILES" | grep -q "utils/"             && SCOPES+=("utils")
+  echo "$CHANGED_FILES" | grep -q "requirements\.txt\|Dockerfile\|docker-compose\|commit\.sh\|\.gitignore" && SCOPES+=("devops")
 
   IFS=$'\n' UNIQUE_SCOPES=($(printf "%s\n" "${SCOPES[@]:-other}" | sort -u))
   SCOPE_STR=$(IFS=", "; echo "${UNIQUE_SCOPES[*]}")
@@ -89,7 +91,7 @@ echo "   訊息：$COMMIT_MSG"
 echo ""
 git log --oneline -5
 
-# ── 6. git push ────────────────────────────────────────────
+# ── 6. git push ──────────────────────────────────────────────
 if git remote get-url origin &>/dev/null; then
   echo ""
   echo "🚀 推送中..."

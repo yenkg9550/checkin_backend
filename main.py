@@ -6,7 +6,7 @@ from passlib.context import CryptContext
 from database import init_db, AsyncSessionLocal
 from models import AdminUser
 from config import settings
-from routers import auth, attendance, admin, webhook
+from routers import auth, attendance, admin, webhook, schedule, payroll, positions
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -58,6 +58,9 @@ app.include_router(auth.router,       prefix="/api/v1")
 app.include_router(attendance.router, prefix="/api/v1")
 app.include_router(admin.router,      prefix="/api/v1")
 app.include_router(webhook.router,    prefix="/api/v1")
+app.include_router(schedule.router,   prefix="/api/v1")
+app.include_router(payroll.router,    prefix="/api/v1")
+app.include_router(positions.router,  prefix="/api/v1")
 
 
 @app.get("/health")

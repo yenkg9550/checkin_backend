@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -9,7 +9,7 @@ bearer = HTTPBearer()
 
 def create_token(payload: dict) -> str:
     data = payload.copy()
-    data["exp"] = datetime.utcnow() + timedelta(hours=settings.jwt_expire_hours)
+    data["exp"] = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=settings.jwt_expire_hours)
     return jwt.encode(data, settings.jwt_secret, algorithm="HS256")
 
 

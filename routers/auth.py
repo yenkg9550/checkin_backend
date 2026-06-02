@@ -27,6 +27,16 @@ async def login_with_line(body: LineLoginRequest, db: AsyncSession = Depends(get
     employee = result.scalar_one_or_none()
 
     if not employee:
+        # 員工人數上限
+        MAX_EMPLOYEES = 20
+        count_result = await db.execute(select(Employee))
+        employee_count = len(count_result.scalars().all())
+        if employee_count >= MAX_EMPLOYEES:
+            raise HTTPException(
+                status_code=403,
+                detail=f"員工人數已達上限（{MAX_EMPLOYEES} 人），請聯絡管理員",
+            )
+
         employee = Employee(
             line_user_id=line_user_id,
             display_name=display_name,
@@ -66,6 +76,7 @@ async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db
     if not admin or not pwd_context.verify(body.password, admin.hashed_password):
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
 
+    perms = [p for p in (admin.permissions or "").split(",") if p]
     token = create_token({"sub": str(admin.id), "role": admin.role.value})
     return AdminTokenResponse(
         access_token=token,
@@ -74,5 +85,6 @@ async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db
             username=admin.username,
             display_name=admin.display_name,
             role=admin.role,
+            permissions=perms,
         ),
     )

@@ -1,18 +1,33 @@
 # CheckIn Backend — FastAPI
 
-LINE 打卡系統的後端 API，使用 FastAPI + SQLAlchemy（async）+ SQLite（開發）/ PostgreSQL（正式）。
+LINE 打卡系統的後端 API，使用 FastAPI + SQLAlchemy（async）+ PostgreSQL。
 
 ## 技術棧
 
-- Python 3.9+
+- Python 3.11+
 - FastAPI 0.111
 - SQLAlchemy 2.0（async）
-- aiosqlite（開發）/ asyncpg（正式）
+- asyncpg（PostgreSQL）
 - Passlib + bcrypt（密碼雜湊）
 - python-jose（JWT）
 - openpyxl（Excel 匯出）
 
-## 快速開始
+## 啟動方式
+
+### 方式一：Docker（推薦）
+
+從專案根目錄執行，一鍵啟動 PostgreSQL + 後端：
+
+```bash
+cd /Users/caramel/Desktop/F2E/checkIn
+docker compose up --build
+```
+
+首次啟動會自動建立資料庫表格與超級管理員帳號。
+
+### 方式二：本地開發
+
+需先自行準備 PostgreSQL，並在 `.env` 設定 `DATABASE_URL`。
 
 ```bash
 # 1. 建立虛擬環境（第一次才需要）
@@ -30,19 +45,26 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-> 首次啟動時會自動建立資料庫表格，並建立超級管理員帳號（預設 `superadmin` / `changeme123`）。
-
 ## 環境變數
 
-在根目錄建立 `.env` 檔（可選，有預設值）：
+複製 `.env.example` 為 `.env` 並填入設定：
 
 ```
-DATABASE_URL=sqlite+aiosqlite:///./checkin.db
-SECRET_KEY=your-secret-key
+# PostgreSQL 連線（Docker 版已自動注入，本地開發需自行填寫）
+DATABASE_URL=postgresql://user:password@localhost:5432/checkin
+
+LINE_CHANNEL_ID=your-line-channel-id
+LINE_CHANNEL_SECRET=your-line-channel-secret
+LINE_CHANNEL_ACCESS_TOKEN=your-line-channel-access-token
+
+JWT_SECRET=your-secret-key
+
+# 超級管理員初始帳密（首次啟動自動建立）
 SUPER_ADMIN_USERNAME=superadmin
 SUPER_ADMIN_PASSWORD=changeme123
-LINE_CHANNEL_ID=your-line-channel-id
 ```
+
+> 預設管理員帳號：`superadmin` / `changeme123`，請登入後台後立即修改密碼。
 
 ## API 路由
 
@@ -69,19 +91,3 @@ LINE_CHANNEL_ID=your-line-channel-id
 | `admin` | 一般管理員，由 super_admin 建立，可使用後台所有功能 |
 | `employee` | 一般員工，使用 LINE LIFF 打卡 |
 
-## 一鍵 Commit 與自動推送
-
-```bash
-# 自動偵測變動檔案、產生 commit message，並 git push
-bash commit.sh
-
-# 使用自訂 commit message
-bash commit.sh "fix(auth): 修正登入驗證邏輯"
-```
-
-腳本會自動：
-1. 若尚未 `git init` 則自動初始化
-2. `git add -A` 加入所有變動
-3. 依變動的檔案路徑（models、schemas、auth、admin 等）自動產生 commit message
-4. `git commit`
-5. 若已設定 remote origin 則自動 `git push`

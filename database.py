@@ -29,5 +29,29 @@ async def get_db() -> AsyncSession:
 
 
 async def init_db():
+    from sqlalchemy import text
+    db_url = _get_db_url()
+    is_postgres = "postgresql" in db_url
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Migration: add is_overtime column to schedules if not yet present
+        if is_postgres:
+            await conn.execute(text(
+                "ALTER TABLE schedules ADD COLUMN IF NOT EXISTS is_overtime BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE employee_salary_configs ADD COLUMN IF NOT EXISTS overtime_min_minutes INTEGER NOT NULL DEFAULT 0"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE positions ADD COLUMN IF NOT EXISTS overtime_min_minutes INTEGER NOT NULL DEFAULT 0"
+            ))
+        else:
+            for sql in [
+                "ALTER TABLE schedules ADD COLUMN is_overtime INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE employee_salary_configs ADD COLUMN overtime_min_minutes INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE positions ADD COLUMN overtime_min_minutes INTEGER NOT NULL DEFAULT 0",
+            ]:
+                try:
+                    await conn.execute(text(sql))
+                except Exception:
+                    pass

@@ -1,6 +1,6 @@
 import httpx
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from datetime import datetime, date as date_cls
@@ -10,6 +10,42 @@ from schemas import CheckInRequest, AttendanceRecord
 from utils.jwt_helper import get_current_user
 from utils.gps import haversine_distance
 from config import settings
+
+
+def get_client_ip(request: Request) -> str:
+    """取得真實客戶端 IP（支援 Nginx/反向代理）"""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else ""
+
+
+def ip_in_whitelist(client_ip: str, allowed_ips: str) -> bool:
+    """檢查 IP 是否在白名單中（支援精確 IP 和 CIDR，如 192.168.1.0/24）"""
+    import ipaddress
+    if not allowed_ips.strip():
+        return False
+    try:
+        client = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    for entry in allowed_ips.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            if "/" in entry:
+                if client in ipaddress.ip_network(entry, strict=False):
+                    return True
+            else:
+                if client == ipaddress.ip_address(entry):
+                    return True
+        except ValueError:
+            continue
+    return False
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/attendance", tags=["attendance"])
@@ -81,6 +117,7 @@ async def push_checkin_message(line_user_id: str, check_type: CheckType, checked
 
 @router.post("", response_model=AttendanceRecord)
 async def check_in(
+    request: Request,
     body: CheckInRequest,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -88,7 +125,7 @@ async def check_in(
     """打卡（上班 / 下班）"""
     employee_id = int(user["sub"])
 
-    # 讀取系統設定（GPS 開關 / 位置 / 半徑）
+    # 讀取系統設定
     cfg_result = await db.execute(select(SystemSettings).where(SystemSettings.id == 1))
     cfg = cfg_result.scalar_one_or_none()
     if not cfg:
@@ -97,12 +134,17 @@ async def check_in(
         await db.commit()
         await db.refresh(cfg)
 
-    # GPS 驗證
     distance_m = None
     is_valid = True
     note = None
+    mode = getattr(cfg, "check_mode", "gps")
 
-    if cfg.gps_enabled:
+    if mode == "free":
+        # 不限制，直接通過
+        pass
+
+    elif mode == "gps":
+        # 純 GPS 模式
         if body.lat is not None and body.lng is not None:
             distance_m = haversine_distance(body.lat, body.lng, cfg.office_lat, cfg.office_lng)
             if distance_m > cfg.office_radius_m:
@@ -111,25 +153,51 @@ async def check_in(
         else:
             is_valid = False
             note = "未提供 GPS 座標，請開啟定位權限"
-
         if not is_valid:
             raise HTTPException(status_code=400, detail=note)
 
-    # 避免同一天重複同類型打卡
-    today_start = datetime.combine(date_cls.today(), datetime.min.time())
-    today_end = datetime.combine(date_cls.today(), datetime.max.time())
+    elif mode == "ip":
+        # 純 IP 模式
+        client_ip = get_client_ip(request)
+        if not ip_in_whitelist(client_ip, getattr(cfg, "allowed_ips", "")):
+            raise HTTPException(status_code=400, detail=f"目前網路（{client_ip}）不在允許打卡的範圍內")
+
+    elif mode == "both":
+        # GPS 或 IP 任一通過即可
+        gps_ok = False
+        ip_ok  = False
+
+        if body.lat is not None and body.lng is not None:
+            distance_m = haversine_distance(body.lat, body.lng, cfg.office_lat, cfg.office_lng)
+            gps_ok = distance_m <= cfg.office_radius_m
+
+        client_ip = get_client_ip(request)
+        ip_ok = ip_in_whitelist(client_ip, getattr(cfg, "allowed_ips", ""))
+
+        if not gps_ok and not ip_ok:
+            raise HTTPException(status_code=400, detail="GPS 位置及網路 IP 皆不符合打卡條件")
+
+    # 避免同一天重複同類型打卡（以台灣時間 UTC+8 為基準）
+    from datetime import timedelta, timezone
+    TW = timezone(timedelta(hours=8))
+    now_tw = datetime.now(tz=TW)
+    tw_today_start = datetime(now_tw.year, now_tw.month, now_tw.day, 0, 0, 0)
+    tw_today_end   = datetime(now_tw.year, now_tw.month, now_tw.day, 23, 59, 59)
+    # 轉回 UTC naive 存入 DB 的格式
+    utc_today_start = tw_today_start - timedelta(hours=8)
+    utc_today_end   = tw_today_end   - timedelta(hours=8)
     dup = await db.execute(
         select(Attendance).where(
             and_(
                 Attendance.employee_id == employee_id,
                 Attendance.check_type == body.check_type,
-                Attendance.checked_at >= today_start,
-                Attendance.checked_at <= today_end,
+                Attendance.checked_at >= utc_today_start,
+                Attendance.checked_at <= utc_today_end,
                 Attendance.is_valid == True,
             )
         )
     )
-    if dup.scalar_one_or_none():
+    if dup.scalars().first():
         raise HTTPException(status_code=409, detail="今日已打過此類型的卡")
 
     # 取得員工的 LINE user ID
@@ -185,8 +253,10 @@ async def my_records_by_date(
         target = date_cls.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD")
-    day_start = datetime.combine(target, datetime.min.time())
-    day_end   = datetime.combine(target, datetime.max.time())
+    from datetime import timedelta
+    # 台灣時間的一天 = UTC 前一天 16:00 ~ 當天 15:59:59
+    day_start = datetime.combine(target, datetime.min.time()) - timedelta(hours=8)
+    day_end   = datetime.combine(target, datetime.max.time()) - timedelta(hours=8)
     result = await db.execute(
         select(Attendance).where(
             and_(
@@ -205,9 +275,12 @@ async def today_status(
     db: AsyncSession = Depends(get_db),
 ):
     """查詢今日打卡狀況"""
+    from datetime import timezone, timedelta
     employee_id = int(user["sub"])
-    today_start = datetime.combine(date_cls.today(), datetime.min.time())
-    today_end = datetime.combine(date_cls.today(), datetime.max.time())
+    TZ_TW = timezone(timedelta(hours=8))
+    now_tw = datetime.now(tz=TZ_TW)
+    today_start = datetime(now_tw.year, now_tw.month, now_tw.day) - timedelta(hours=8)
+    today_end   = datetime(now_tw.year, now_tw.month, now_tw.day, 23, 59, 59) - timedelta(hours=8)
     result = await db.execute(
         select(Attendance).where(
             and_(

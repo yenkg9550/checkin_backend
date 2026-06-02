@@ -10,11 +10,11 @@ from passlib.context import CryptContext
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from database import get_db
-from models import Attendance, Employee, Override, CheckType, SystemSettings, AdminUser
+from models import Attendance, Employee, Override, CheckType, SystemSettings, AdminUser, PayrollRecord
 from schemas import (
     AttendanceWithUser, OverrideRequest, EmployeeOut,
     SystemSettingsOut, SystemSettingsUpdate,
-    AdminCreateRequest, AdminPasswordUpdate, AdminUserOut,
+    AdminCreateRequest, AdminPasswordUpdate, AdminUserOut, AdminPermissionsUpdate,
 )
 from utils.jwt_helper import require_admin, require_super_admin
 
@@ -31,10 +31,11 @@ async def daily_report(
     admin: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """查詢指定日期（預設今天）所有員工打卡紀錄"""
-    target = report_date or date.today()
-    day_start = datetime.combine(target, datetime.min.time())
-    day_end = datetime.combine(target, datetime.max.time())
+    """查詢指定日期（預設今天台灣時間）所有員工打卡紀錄"""
+    target = report_date or datetime.now(TZ_TAIPEI).date()
+    # 前端傳台灣日期，轉換為對應 UTC 範圍（UTC = 台灣時間 - 8h）
+    day_start = datetime.combine(target, datetime.min.time()) - timedelta(hours=8)
+    day_end   = datetime.combine(target, datetime.max.time()) - timedelta(hours=8)
 
     result = await db.execute(
         select(Attendance, Employee.display_name, Employee.picture_url)
@@ -52,6 +53,140 @@ async def daily_report(
         )
         for att, name, pic in rows
     ]
+
+
+@router.get("/attendance/monthly")
+async def monthly_attendance(
+    year:        int,
+    month:       int,
+    employee_id: Optional[int] = None,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """回傳指定月份的所有打卡紀錄，依員工 + 日期分組為 (clock_in, clock_out) 配對。"""
+    first_day = date(year, month, 1)
+    if month == 12:
+        last_day = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(year, month + 1, 1) - timedelta(days=1)
+    win_start = datetime.combine(first_day, datetime.min.time()) - timedelta(hours=8)
+    win_end   = datetime.combine(last_day,  datetime.max.time()) - timedelta(hours=8)
+
+    q = (
+        select(Attendance, Employee.display_name, Employee.picture_url)
+        .join(Employee, Attendance.employee_id == Employee.id)
+        .where(Attendance.checked_at >= win_start)
+        .where(Attendance.checked_at <= win_end)
+        .order_by(Employee.display_name, Attendance.checked_at)
+    )
+    if employee_id:
+        q = q.where(Attendance.employee_id == employee_id)
+
+    rows = (await db.execute(q)).all()
+
+    # 撈排班休息時間：(employee_id, work_date) → break_minutes
+    from models import Schedule, Shift as ShiftModel
+    sched_q = (
+        select(Schedule.employee_id, Schedule.work_date, ShiftModel.break_minutes)
+        .join(ShiftModel, Schedule.shift_id == ShiftModel.id)
+        .where(Schedule.work_date >= first_day, Schedule.work_date <= last_day)
+    )
+    if employee_id:
+        sched_q = sched_q.where(Schedule.employee_id == employee_id)
+    sched_rows = (await db.execute(sched_q)).all()
+    break_map: dict[tuple, int] = {}
+    sched_set: set[tuple] = set()
+    for r in sched_rows:
+        key = (r.employee_id, r.work_date.isoformat())
+        break_map[key] = r.break_minutes
+        sched_set.add(key)
+
+    # 依員工 + 台灣日期分組，配對 clock_in / clock_out
+    from collections import defaultdict
+    grouped: dict[tuple, dict] = defaultdict(lambda: {
+        "clock_in": None, "clock_out": None,
+        "clock_in_id": None, "clock_out_id": None,
+    })
+    emp_info: dict[int, dict] = {}
+
+    for att, name, pic in rows:
+        eid = att.employee_id
+        emp_info[eid] = {"employee_id": eid, "employee_name": name, "picture_url": pic}
+        tw_dt = att.checked_at + timedelta(hours=8)
+        key = (eid, tw_dt.date().isoformat())
+        if att.check_type == CheckType.clock_in:
+            grouped[key]["clock_in"]    = (att.checked_at + timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S")
+            grouped[key]["clock_in_id"] = att.id
+        else:
+            grouped[key]["clock_out"]    = (att.checked_at + timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S")
+            grouped[key]["clock_out_id"] = att.id
+
+    result = []
+    for (eid, work_date), times in sorted(grouped.items(), key=lambda x: (x[0][0], x[0][1])):
+        info = emp_info[eid]
+        ci_str = times["clock_in"]
+        co_str = times["clock_out"]
+        worked_min = None
+        if ci_str and co_str:
+            ci = datetime.fromisoformat(ci_str)
+            co = datetime.fromisoformat(co_str)
+            diff = (co - ci).total_seconds() / 60
+            if diff < 0:
+                diff += 1440  # overnight
+            break_min = break_map.get((eid, work_date), 0)
+            worked_min = max(0, int(diff) - break_min)
+        result.append({
+            **info,
+            "work_date":      work_date,
+            "clock_in":       ci_str,
+            "clock_out":      co_str,
+            "clock_in_id":    times["clock_in_id"],
+            "clock_out_id":   times["clock_out_id"],
+            "worked_minutes": worked_min,
+            "has_schedule":   (eid, work_date) in sched_set,
+        })
+
+    return result
+
+
+@router.patch("/attendance/{att_id}")
+async def update_attendance(
+    att_id: int,
+    body: dict,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新單筆打卡紀錄的時間（台灣時間 HH:MM 字串）"""
+    result = await db.execute(select(Attendance).where(Attendance.id == att_id))
+    att = result.scalar_one_or_none()
+    if not att:
+        raise HTTPException(status_code=404, detail="打卡紀錄不存在")
+    # body: { "time": "HH:MM", "date": "YYYY-MM-DD" }
+    time_str = body.get("time")  # e.g. "08:30"
+    date_str = body.get("date")  # e.g. "2026-05-05"
+    if not time_str or not date_str:
+        raise HTTPException(status_code=422, detail="需提供 date 和 time")
+    h, m = map(int, time_str.split(":"))
+    tw_dt = datetime.fromisoformat(date_str).replace(hour=h, minute=m, second=0, microsecond=0)
+    att.checked_at = tw_dt - timedelta(hours=8)
+    await db.commit()
+    return {"success": True}
+
+
+@router.delete("/attendance/{att_id}")
+async def delete_attendance(
+    att_id: int,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """刪除單筆打卡紀錄"""
+    result = await db.execute(select(Attendance).where(Attendance.id == att_id))
+    att = result.scalar_one_or_none()
+    if not att:
+        raise HTTPException(status_code=404, detail="打卡紀錄不存在")
+    await db.delete(att)
+    await db.commit()
+    return {"success": True}
 
 
 @router.get("/employees", response_model=list[EmployeeOut])
@@ -78,6 +213,64 @@ async def update_role(
     emp.role = role
     await db.commit()
     return {"success": True}
+
+
+@router.patch("/employees/{employee_id}/hire-date")
+async def update_hire_date(
+    employee_id: int,
+    hire_date: str,   # YYYY-MM-DD or ""
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """設定員工到職日"""
+    from datetime import date as date_cls
+    result = await db.execute(select(Employee).where(Employee.id == employee_id))
+    emp = result.scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=404, detail="員工不存在")
+    emp.hire_date = date_cls.fromisoformat(hire_date) if hire_date else None
+    await db.commit()
+    return {"success": True}
+
+
+@router.get("/overrides")
+async def list_overrides(
+    employee_id: Optional[int] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """查詢補打卡紀錄，可依員工、年月篩選"""
+    q = (
+        select(Override, Employee.display_name, Employee.picture_url)
+        .join(Employee, Override.employee_id == Employee.id)
+        .order_by(Override.created_at.desc())
+    )
+    if employee_id:
+        q = q.where(Override.employee_id == employee_id)
+    if year and month:
+        import calendar as cal
+        last_day = cal.monthrange(year, month)[1]
+        # override_at 儲存 UTC，月份範圍轉回 UTC
+        m_start = datetime(year, month, 1) - timedelta(hours=8)
+        m_end   = datetime(year, month, last_day, 23, 59, 59) - timedelta(hours=8)
+        q = q.where(Override.override_at >= m_start, Override.override_at <= m_end)
+    result = await db.execute(q)
+    rows = result.all()
+    return [
+        {
+            "id": ov.id,
+            "employee_id": ov.employee_id,
+            "display_name": name,
+            "picture_url": pic,
+            "check_type": ov.check_type,
+            "override_at": ov.override_at.replace(tzinfo=timezone.utc).astimezone(TZ_TAIPEI).isoformat(),
+            "reason": ov.reason,
+            "created_at": ov.created_at.replace(tzinfo=timezone.utc).astimezone(TZ_TAIPEI).isoformat(),
+        }
+        for ov, name, pic in rows
+    ]
 
 
 @router.post("/override")
@@ -154,22 +347,33 @@ async def update_settings(
 async def export_monthly(
     year:  int,
     month: int,
+    employee_ids: Optional[str] = None,
     admin: dict = Depends(require_admin),
     db:    AsyncSession = Depends(get_db),
 ):
-    """匯出指定年月的打卡記錄為 Excel"""
-    # 該月範圍
-    last_day = calendar.monthrange(year, month)[1]
-    day_start = datetime(year, month, 1)
-    day_end   = datetime(year, month, last_day, 23, 59, 59)
+    """匯出指定年月的打卡記錄為 Excel；employee_ids 為逗號分隔的員工 id，空白表示全部"""
+    # 該月範圍（轉換為 UTC，台灣時間 = UTC+8）
+    last_day  = calendar.monthrange(year, month)[1]
+    day_start = datetime(year, month, 1) - timedelta(hours=8)
+    day_end   = datetime(year, month, last_day, 23, 59, 59) - timedelta(hours=8)
+
+    # 解析員工篩選
+    filter_ids: list[int] | None = None
+    if employee_ids:
+        try:
+            filter_ids = [int(x) for x in employee_ids.split(",") if x.strip()]
+        except ValueError:
+            pass
 
     # 查詢
-    result = await db.execute(
+    att_query = (
         select(Attendance, Employee.display_name)
         .join(Employee, Attendance.employee_id == Employee.id)
         .where(and_(Attendance.checked_at >= day_start, Attendance.checked_at <= day_end))
-        .order_by(Employee.display_name, Attendance.checked_at)
     )
+    if filter_ids:
+        att_query = att_query.where(Attendance.employee_id.in_(filter_ids))
+    result = await db.execute(att_query.order_by(Employee.display_name, Attendance.checked_at))
     rows = result.all()
 
     # 先按員工分成 clock_in / clock_out 兩個清單
@@ -201,8 +405,11 @@ async def export_monthly(
                     used.add(i)
                     break
 
-    # 員工列表（查全部，包含沒打卡的）
-    emp_result = await db.execute(select(Employee).order_by(Employee.display_name))
+    # 員工列表（包含沒打卡的，依篩選條件過濾）
+    emp_query = select(Employee).order_by(Employee.display_name)
+    if filter_ids:
+        emp_query = emp_query.where(Employee.id.in_(filter_ids))
+    emp_result = await db.execute(emp_query)
     all_employees = [e.display_name for e in emp_result.scalars().all()]
 
     # ── 建立 Excel ────────────────────────────────────────────────────────────
@@ -308,9 +515,121 @@ async def export_monthly(
     )
 
 
+@router.get("/export/payroll")
+async def export_payroll(
+    year: int,
+    month: int,
+    employee_ids: Optional[str] = None,
+    columns: Optional[str] = None,   # 逗號分隔，ex: "worked_h,overtime_h,base_pay,overtime_pay,holiday_pay,deductions,total_pay"
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """匯出薪資報表 Excel；支援員工篩選與欄位選擇"""
+    filter_ids: list[int] | None = None
+    if employee_ids:
+        try:
+            filter_ids = [int(x) for x in employee_ids.split(",") if x.strip()]
+        except ValueError:
+            pass
+
+    # 要輸出的欄位（預設全部）
+    ALL_COLS = ["worked_h", "overtime_h", "late_h", "early_h", "base_pay", "overtime_pay", "holiday_pay", "deductions", "total_pay", "status"]
+    selected = [c.strip() for c in columns.split(",")] if columns else ALL_COLS
+    selected = [c for c in selected if c in ALL_COLS]  # 過濾非法欄位
+
+    COL_LABEL = {
+        "worked_h":    "出勤(h)",
+        "overtime_h":  "加班(h)",
+        "late_h":      "遲到(h)",
+        "early_h":     "早退(h)",
+        "base_pay":    "底薪",
+        "overtime_pay":"加班薪",
+        "holiday_pay": "特別假日",
+        "deductions":  "扣款",
+        "total_pay":   "合計",
+        "status":      "狀態",
+    }
+
+    # 查詢薪資資料
+    q = (
+        select(PayrollRecord, Employee.display_name)
+        .join(Employee, PayrollRecord.employee_id == Employee.id)
+        .where(PayrollRecord.year == year, PayrollRecord.month == month)
+        .order_by(Employee.display_name)
+    )
+    if filter_ids:
+        q = q.where(PayrollRecord.employee_id.in_(filter_ids))
+    result = await db.execute(q)
+    rows = result.all()
+
+    # ── Excel ─────────────────────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"{year}年{month}月薪資"
+
+    CLR_HEADER = "1E293B"
+    CLR_WHITE  = "FFFFFF"
+    CLR_EVEN   = "F8FAFC"
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    headers = ["員工"] + [COL_LABEL[c] for c in selected]
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = Font(bold=True, color=CLR_WHITE, size=11)
+        cell.fill = PatternFill("solid", fgColor=CLR_HEADER)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+    ws.row_dimensions[1].height = 22
+
+    def col_val(rec, col_key):
+        if col_key == "worked_h":    return round(rec.worked_minutes / 60, 1)
+        if col_key == "overtime_h":  return round(rec.overtime_minutes / 60, 1)
+        if col_key == "late_h":      return round(rec.late_minutes / 60, 1)
+        if col_key == "early_h":     return round(rec.early_leave_minutes / 60, 1)
+        if col_key == "base_pay":    return rec.base_pay
+        if col_key == "overtime_pay":return rec.overtime_pay
+        if col_key == "holiday_pay": return rec.holiday_pay
+        if col_key == "deductions":  return rec.deductions
+        if col_key == "total_pay":   return rec.total_pay
+        if col_key == "status":      return "已確認" if rec.status == "finalized" else "未確認"
+
+    for i, (rec, emp_name) in enumerate(rows, 2):
+        fill = PatternFill("solid", fgColor=CLR_EVEN if i % 2 == 0 else CLR_WHITE)
+        ws.cell(row=i, column=1, value=emp_name).font = Font(bold=True, size=10)
+        ws.cell(row=i, column=1).border = border
+        ws.cell(row=i, column=1).fill = fill
+        ws.cell(row=i, column=1).alignment = Alignment(horizontal="left", vertical="center")
+        for j, c in enumerate(selected, 2):
+            cell = ws.cell(row=i, column=j, value=col_val(rec, c))
+            cell.border = border
+            cell.fill = fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.font = Font(size=10)
+        ws.row_dimensions[i].height = 18
+
+    # 欄寬
+    ws.column_dimensions["A"].width = 16
+    for j in range(2, len(headers) + 1):
+        ws.column_dimensions[get_column_letter(j)].width = 11
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"payroll_{year}_{month:02d}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 管理員帳號管理
 # ══════════════════════════════════════════════════════════════════════════
+
+VALID_PERMISSIONS = {"attendance", "employees", "schedule", "export", "salary", "settings"}
 
 @router.get("/admins", response_model=list[AdminUserOut])
 async def list_admins(
@@ -321,7 +640,8 @@ async def list_admins(
     result = await db.execute(
         select(AdminUser).order_by(AdminUser.role.desc(), AdminUser.id)
     )
-    return result.scalars().all()
+    admins = result.scalars().all()
+    return [AdminUserOut.from_orm_with_perms(a) for a in admins]
 
 
 @router.post("/admins", response_model=AdminUserOut, status_code=201)
@@ -337,16 +657,40 @@ async def create_admin(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="帳號已存在")
 
+    valid_perms = [p for p in body.permissions if p in VALID_PERMISSIONS]
     new_admin = AdminUser(
         username=body.username,
         hashed_password=pwd_context.hash(body.password),
         display_name=body.display_name,
         role="admin",
+        permissions=",".join(valid_perms),
     )
     db.add(new_admin)
     await db.commit()
     await db.refresh(new_admin)
-    return new_admin
+    return AdminUserOut.from_orm_with_perms(new_admin)
+
+
+@router.patch("/admins/{admin_id}/permissions", response_model=AdminUserOut)
+async def update_admin_permissions(
+    admin_id: int,
+    body: AdminPermissionsUpdate,
+    admin: dict = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新管理員權限（僅 super_admin 可執行）"""
+    result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="管理員不存在")
+    if target.role.value == "super_admin":
+        raise HTTPException(status_code=400, detail="超級管理員權限不可修改")
+
+    valid_perms = [p for p in body.permissions if p in VALID_PERMISSIONS]
+    target.permissions = ",".join(valid_perms)
+    await db.commit()
+    await db.refresh(target)
+    return AdminUserOut.from_orm_with_perms(target)
 
 
 @router.delete("/admins/{admin_id}", status_code=204)
