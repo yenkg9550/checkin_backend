@@ -37,6 +37,9 @@ async def init_db():
         # Migration: add is_overtime column to schedules if not yet present
         if is_postgres:
             await conn.execute(text(
+                "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1"
+            ))
+            await conn.execute(text(
                 "ALTER TABLE schedules ADD COLUMN IF NOT EXISTS is_overtime BOOLEAN NOT NULL DEFAULT FALSE"
             ))
             await conn.execute(text(

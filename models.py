@@ -132,6 +132,7 @@ class AdminUser(Base):
     # 逗號分隔的權限清單，例："attendance,employees,schedule"
     # super_admin 忽略此欄位（自動擁有全部權限）
     permissions:     Mapped[str]           = mapped_column(String(300), default="")
+    token_version:   Mapped[int]           = mapped_column(Integer, default=1)
     created_at:      Mapped[datetime]      = mapped_column(UTCDateTime, default=_utcnow)
 
 

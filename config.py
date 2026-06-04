@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     super_admin_username: str = "superadmin"
     super_admin_password: str = "changeme123"
 
+    # 正式環境設為 false 關閉 API 文件
+    enable_docs: bool = True
+
+    # CORS 允許的來源，逗號分隔；留空則允許全部（開發用）
+    cors_origins: str = ""
+
     class Config:
         env_file = ".env"
 

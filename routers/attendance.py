@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from datetime import datetime, date as date_cls
 from database import get_db
-from models import Attendance, Employee, CheckType, SystemSettings
+from models import Attendance, Employee, CheckType, SystemSettings, Schedule, Shift
 from schemas import CheckInRequest, AttendanceRecord
 from utils.jwt_helper import get_current_user
 from utils.gps import haversine_distance
@@ -291,3 +291,47 @@ async def today_status(
         ).order_by(Attendance.checked_at)
     )
     return result.scalars().all()
+
+
+@router.get("/my-schedule")
+async def my_schedule(
+    year: int,
+    month: int,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """員工查詢自己的班表（上/這/下個月）"""
+    from datetime import date, timedelta
+    employee_id = int(user["sub"])
+
+    first_day = date(year, month, 1)
+    if month == 12:
+        last_day = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(year, month + 1, 1) - timedelta(days=1)
+
+    rows = (await db.execute(
+        select(Schedule, Shift)
+        .join(Shift, Schedule.shift_id == Shift.id)
+        .where(Schedule.employee_id == employee_id)
+        .where(Schedule.work_date >= first_day)
+        .where(Schedule.work_date <= last_day)
+        .order_by(Schedule.work_date)
+    )).all()
+
+    return [
+        {
+            "id": sched.id,
+            "work_date": sched.work_date.isoformat(),
+            "is_overtime": sched.is_overtime,
+            "shift": {
+                "id": shift.id,
+                "name": shift.name,
+                "start_time": shift.start_time,
+                "end_time": shift.end_time,
+                "color": shift.color,
+                "break_minutes": shift.break_minutes,
+            },
+        }
+        for sched, shift in rows
+    ]

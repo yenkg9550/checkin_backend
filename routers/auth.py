@@ -65,6 +65,28 @@ async def login_with_line(body: LineLoginRequest, db: AsyncSession = Depends(get
     )
 
 
+@router.post("/dev-login", response_model=TokenResponse)
+async def dev_login(line_user_id: str, db: AsyncSession = Depends(get_db)):
+    """本地開發用登入（僅在 ENABLE_DOCS=true 環境下可用）"""
+    if not settings.enable_docs:
+        raise HTTPException(status_code=404, detail="Not Found")
+    result = await db.execute(select(Employee).where(Employee.line_user_id == line_user_id))
+    employee = result.scalar_one_or_none()
+    if not employee:
+        raise HTTPException(status_code=404, detail="員工不存在，請先執行 seed_local.py")
+    token = create_token({"sub": str(employee.id), "role": employee.role.value})
+    return TokenResponse(
+        access_token=token,
+        user=UserInfo(
+            id=employee.id,
+            line_user_id=employee.line_user_id,
+            display_name=employee.display_name,
+            picture_url=employee.picture_url,
+            role=employee.role,
+        ),
+    )
+
+
 @router.post("/admin-login", response_model=AdminTokenResponse)
 async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db)):
     """管理後台帳密登入（查詢 admin_users 資料表）"""
@@ -76,8 +98,13 @@ async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db
     if not admin or not pwd_context.verify(body.password, admin.hashed_password):
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
 
+    # 遞增 token_version，讓舊 token 全部失效（踢出同帳號其他登入）
+    admin.token_version = (admin.token_version or 0) + 1
+    await db.commit()
+    await db.refresh(admin)
+
     perms = [p for p in (admin.permissions or "").split(",") if p]
-    token = create_token({"sub": str(admin.id), "role": admin.role.value})
+    token = create_token({"sub": str(admin.id), "role": admin.role.value, "tv": admin.token_version})
     return AdminTokenResponse(
         access_token=token,
         user=AdminUserInfo(
