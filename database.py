@@ -39,6 +39,12 @@ async def init_db():
             await conn.execute(text(
                 "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1"
             ))
+            await conn.execute(text("ALTER TABLE employee_salary_configs ADD COLUMN IF NOT EXISTS insurance_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+            await conn.execute(text("ALTER TABLE employee_salary_configs ADD COLUMN IF NOT EXISTS insurance_rate FLOAT NOT NULL DEFAULT 6.0"))
+            await conn.execute(text("ALTER TABLE employee_salary_configs ADD COLUMN IF NOT EXISTS pension_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+            await conn.execute(text("ALTER TABLE employee_salary_configs ADD COLUMN IF NOT EXISTS pension_rate FLOAT NOT NULL DEFAULT 6.0"))
+            await conn.execute(text("ALTER TABLE payroll_records ADD COLUMN IF NOT EXISTS insurance_deduction FLOAT NOT NULL DEFAULT 0.0"))
+            await conn.execute(text("ALTER TABLE payroll_records ADD COLUMN IF NOT EXISTS pension_deduction FLOAT NOT NULL DEFAULT 0.0"))
             await conn.execute(text(
                 "ALTER TABLE schedules ADD COLUMN IF NOT EXISTS is_overtime BOOLEAN NOT NULL DEFAULT FALSE"
             ))

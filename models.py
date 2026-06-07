@@ -145,6 +145,9 @@ class Override(Base):
     override_at: Mapped[datetime] = mapped_column(UTCDateTime)
     reason: Mapped[str] = mapped_column(String(300))
     approved_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    # status: "pending" | "approved" | "rejected"（舊資料預設為 approved）
+    status: Mapped[str] = mapped_column(String(20), default="approved", server_default="approved")
+    reject_reason: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
 
     employee: Mapped["Employee"] = relationship(back_populates="overrides", foreign_keys=[employee_id])
@@ -216,6 +219,12 @@ class EmployeeSalaryConfig(Base):
     holiday_rate:             Mapped[float] = mapped_column(Float, default=2.0)
     # 每月標準工時（月薪制換算時薪用，勞基法預設 174 小時）
     monthly_work_hours:       Mapped[float] = mapped_column(Float, default=174.0)
+    # 勞健保自動扣除
+    insurance_enabled:        Mapped[bool]  = mapped_column(Boolean, default=False)
+    insurance_rate:           Mapped[float] = mapped_column(Float, default=6.0)   # 單位 %
+    # 勞退自提
+    pension_enabled:          Mapped[bool]  = mapped_column(Boolean, default=False)
+    pension_rate:             Mapped[float] = mapped_column(Float, default=6.0)   # 單位 %
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow, onupdate=_utcnow)
@@ -264,8 +273,10 @@ class PayrollRecord(Base):
     base_pay:      Mapped[float] = mapped_column(Float, default=0.0)
     overtime_pay:  Mapped[float] = mapped_column(Float, default=0.0)
     holiday_pay:   Mapped[float] = mapped_column(Float, default=0.0)
-    deductions:    Mapped[float] = mapped_column(Float, default=0.0)
-    total_pay:     Mapped[float] = mapped_column(Float, default=0.0)
+    deductions:          Mapped[float] = mapped_column(Float, default=0.0)
+    insurance_deduction: Mapped[float] = mapped_column(Float, default=0.0)
+    pension_deduction:   Mapped[float] = mapped_column(Float, default=0.0)
+    total_pay:           Mapped[float] = mapped_column(Float, default=0.0)
 
     anomaly_days:      Mapped[int] = mapped_column(Integer, default=0)  # 只有上班或只有下班的天數
     unscheduled_days:  Mapped[int] = mapped_column(Integer, default=0)  # 有打卡但無排班的天數

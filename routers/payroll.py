@@ -482,6 +482,15 @@ async def _calculate_payroll(
     if cfg.pay_type == PayType.monthly:
         total_base = cfg.base_salary
 
+    # 勞健保 & 勞退自提（以底薪為基數）
+    insurance_deduction = 0.0
+    pension_deduction   = 0.0
+    if getattr(cfg, 'insurance_enabled', False):
+        insurance_deduction = round(total_base * getattr(cfg, 'insurance_rate', 6.0) / 100)
+    if getattr(cfg, 'pension_enabled', False):
+        pension_deduction = round(total_base * getattr(cfg, 'pension_rate', 6.0) / 100)
+    total_deductions += insurance_deduction + pension_deduction
+
     total_pay = total_base + total_ot_pay + total_hol_pay - total_deductions
 
     # Upsert record（已結算的薪資單拒絕重算）
@@ -507,6 +516,8 @@ async def _calculate_payroll(
     rec.overtime_pay        = round(total_ot_pay)
     rec.holiday_pay         = round(total_hol_pay)
     rec.deductions          = round(total_deductions)
+    rec.insurance_deduction = round(insurance_deduction)
+    rec.pension_deduction   = round(pension_deduction)
     rec.total_pay           = round(total_pay)
     rec.anomaly_days        = total_anomaly
     rec.unscheduled_days    = total_unscheduled

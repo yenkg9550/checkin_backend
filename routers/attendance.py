@@ -3,10 +3,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from datetime import datetime, date as date_cls
+from datetime import datetime, date as date_cls, timezone, timedelta
 from database import get_db
-from models import Attendance, Employee, CheckType, SystemSettings, Schedule, Shift
-from schemas import CheckInRequest, AttendanceRecord
+from models import Attendance, Employee, CheckType, SystemSettings, Schedule, Shift, Override
+from schemas import CheckInRequest, AttendanceRecord, OverrideRequestCreate, OverrideRequestOut
 from utils.jwt_helper import get_current_user
 from utils.gps import haversine_distance
 from config import settings
@@ -291,6 +291,65 @@ async def today_status(
         ).order_by(Attendance.checked_at)
     )
     return result.scalars().all()
+
+
+@router.post("/override-request", status_code=201)
+async def submit_override_request(
+    body: OverrideRequestCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """員工提交補打卡申請（待管理員審核）"""
+    employee_id = int(user["sub"])
+    TZ_TW = timezone(timedelta(hours=8))
+    # override_at 前端送台灣時間，轉 UTC 存入
+    ov_at = body.override_at
+    if ov_at.tzinfo is not None:
+        ov_at = ov_at.astimezone(timezone.utc).replace(tzinfo=None)
+    override = Override(
+        employee_id=employee_id,
+        check_type=body.check_type,
+        override_at=ov_at,
+        reason=body.reason,
+        status="pending",
+    )
+    db.add(override)
+    await db.commit()
+    await db.refresh(override)
+    return {"id": override.id, "status": "pending"}
+
+
+@router.get("/override-requests", response_model=list[OverrideRequestOut])
+async def my_override_requests(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """員工查詢自己的補打卡申請列表"""
+    employee_id = int(user["sub"])
+    TZ_TW = timezone(timedelta(hours=8))
+    result = await db.execute(
+        select(Override, Employee.display_name, Employee.picture_url)
+        .join(Employee, Override.employee_id == Employee.id)
+        .where(Override.employee_id == employee_id)
+        .order_by(Override.created_at.desc())
+        .limit(30)
+    )
+    rows = result.all()
+    return [
+        OverrideRequestOut(
+            id=ov.id,
+            employee_id=ov.employee_id,
+            display_name=name,
+            picture_url=pic,
+            check_type=ov.check_type,
+            override_at=ov.override_at.replace(tzinfo=timezone.utc).astimezone(TZ_TW),
+            reason=ov.reason,
+            status=ov.status,
+            reject_reason=ov.reject_reason,
+            created_at=ov.created_at.replace(tzinfo=timezone.utc).astimezone(TZ_TW),
+        )
+        for ov, name, pic in rows
+    ]
 
 
 @router.get("/my-schedule")

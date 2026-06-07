@@ -15,6 +15,7 @@ from schemas import (
     AttendanceWithUser, OverrideRequest, EmployeeOut,
     SystemSettingsOut, SystemSettingsUpdate,
     AdminCreateRequest, AdminPasswordUpdate, AdminUserOut, AdminPermissionsUpdate,
+    OverrideRequestOut, OverrideApproveReject,
 )
 from utils.jwt_helper import require_admin, require_super_admin
 
@@ -279,13 +280,14 @@ async def create_override(
     admin: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """補打卡"""
+    """補打卡（管理員直接建立，自動 approved）"""
     override = Override(
         employee_id=body.employee_id,
         check_type=body.check_type,
         override_at=body.override_at,
         reason=body.reason,
         approved_by=int(admin["sub"]) if admin["sub"].isdigit() else None,
+        status="approved",
     )
     db.add(override)
 
@@ -298,6 +300,92 @@ async def create_override(
         note=f"補打卡：{body.reason}",
     )
     db.add(att)
+    await db.commit()
+    return {"success": True}
+
+
+@router.get("/override-requests", response_model=list[OverrideRequestOut])
+async def list_override_requests(
+    status: Optional[str] = None,   # pending | approved | rejected
+    employee_id: Optional[int] = None,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """查詢員工補打卡申請列表"""
+    q = (
+        select(Override, Employee.display_name, Employee.picture_url)
+        .join(Employee, Override.employee_id == Employee.id)
+        .order_by(Override.created_at.desc())
+    )
+    if status:
+        q = q.where(Override.status == status)
+    if employee_id:
+        q = q.where(Override.employee_id == employee_id)
+    rows = (await db.execute(q)).all()
+    return [
+        OverrideRequestOut(
+            id=ov.id,
+            employee_id=ov.employee_id,
+            display_name=name,
+            picture_url=pic,
+            check_type=ov.check_type,
+            override_at=ov.override_at.replace(tzinfo=timezone.utc).astimezone(TZ_TAIPEI),
+            reason=ov.reason,
+            status=ov.status,
+            reject_reason=ov.reject_reason,
+            created_at=ov.created_at.replace(tzinfo=timezone.utc).astimezone(TZ_TAIPEI),
+        )
+        for ov, name, pic in rows
+    ]
+
+
+@router.patch("/override-requests/{request_id}/approve")
+async def approve_override_request(
+    request_id: int,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """審核通過補打卡申請，並同步寫入出勤紀錄"""
+    result = await db.execute(select(Override).where(Override.id == request_id))
+    ov = result.scalar_one_or_none()
+    if not ov:
+        raise HTTPException(status_code=404, detail="申請不存在")
+    if ov.status != "pending":
+        raise HTTPException(status_code=400, detail="此申請已處理過")
+
+    ov.status = "approved"
+    ov.approved_by = int(admin["sub"]) if str(admin["sub"]).isdigit() else None
+
+    # 同步寫入一筆 attendance
+    att = Attendance(
+        employee_id=ov.employee_id,
+        check_type=ov.check_type,
+        checked_at=ov.override_at,
+        is_valid=True,
+        note=f"補打卡：{ov.reason}",
+    )
+    db.add(att)
+    await db.commit()
+    return {"success": True}
+
+
+@router.patch("/override-requests/{request_id}/reject")
+async def reject_override_request(
+    request_id: int,
+    body: OverrideApproveReject,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """駁回補打卡申請"""
+    result = await db.execute(select(Override).where(Override.id == request_id))
+    ov = result.scalar_one_or_none()
+    if not ov:
+        raise HTTPException(status_code=404, detail="申請不存在")
+    if ov.status != "pending":
+        raise HTTPException(status_code=400, detail="此申請已處理過")
+
+    ov.status = "rejected"
+    ov.reject_reason = body.reject_reason
     await db.commit()
     return {"success": True}
 

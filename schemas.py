@@ -141,6 +141,33 @@ class OverrideRequest(BaseModel):
     reason: str
 
 
+# 員工自助補打卡申請
+class OverrideRequestCreate(BaseModel):
+    check_type: CheckType
+    override_at: datetime   # 台灣時間（前端送 ISO 字串）
+    reason: str
+
+
+class OverrideRequestOut(BaseModel):
+    id: int
+    employee_id: int
+    display_name: str
+    picture_url: Optional[str]
+    check_type: CheckType
+    override_at: datetime
+    reason: str
+    status: str
+    reject_reason: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OverrideApproveReject(BaseModel):
+    reject_reason: Optional[str] = None
+
+
 class SystemSettingsOut(BaseModel):
     check_mode:     str = "gps"
     gps_enabled:    bool
@@ -216,6 +243,10 @@ class SalaryConfigUpdate(BaseModel):
     deduction_fixed:           Optional[float] = None
     holiday_rate:              Optional[float] = None
     monthly_work_hours:        Optional[float] = None
+    insurance_enabled:         Optional[bool]  = None
+    insurance_rate:            Optional[float] = None
+    pension_enabled:           Optional[bool]  = None
+    pension_rate:              Optional[float] = None
 
 class SalaryConfigOut(BaseModel):
     id:                        int
@@ -230,6 +261,10 @@ class SalaryConfigOut(BaseModel):
     deduction_fixed:           float
     holiday_rate:              float
     monthly_work_hours:        float
+    insurance_enabled:         bool
+    insurance_rate:            float
+    pension_enabled:           bool
+    pension_rate:              float
     created_at:                datetime
     updated_at:                datetime
     class Config:
@@ -273,6 +308,8 @@ class PayrollRecordOut(BaseModel):
     overtime_pay:        float
     holiday_pay:         float
     deductions:          float
+    insurance_deduction: float = 0.0
+    pension_deduction:   float = 0.0
     total_pay:           float
     anomaly_days:        int = 0
     unscheduled_days:    int = 0
