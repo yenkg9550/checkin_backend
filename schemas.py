@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime, date
 from typing import Optional
 from models import CheckType, Role, AdminRole
@@ -145,7 +145,11 @@ class OverrideRequest(BaseModel):
 class OverrideRequestCreate(BaseModel):
     check_type: CheckType
     override_at: datetime   # 台灣時間（前端送 ISO 字串）
-    reason: str
+    reason: str = Field(..., max_length=30)
+
+
+class OverrideApproveReject(BaseModel):
+    reject_reason: Optional[str] = Field(None, max_length=30)
 
 
 class OverrideRequestOut(BaseModel):
@@ -164,8 +168,6 @@ class OverrideRequestOut(BaseModel):
         from_attributes = True
 
 
-class OverrideApproveReject(BaseModel):
-    reject_reason: Optional[str] = None
 
 
 class SystemSettingsOut(BaseModel):

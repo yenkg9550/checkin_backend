@@ -302,10 +302,54 @@ async def submit_override_request(
     """員工提交補打卡申請（待管理員審核）"""
     employee_id = int(user["sub"])
     TZ_TW = timezone(timedelta(hours=8))
+
     # override_at 前端送台灣時間，轉 UTC 存入
     ov_at = body.override_at
     if ov_at.tzinfo is not None:
         ov_at = ov_at.astimezone(timezone.utc).replace(tzinfo=None)
+
+    # 檢查該日是否已有正式打卡紀錄（同類型）
+    # 以台灣日期為基準，換算 UTC 範圍
+    tw_date = (ov_at + timedelta(hours=8)).date()
+    day_start = datetime.combine(tw_date, datetime.min.time()) - timedelta(hours=8)
+    day_end   = datetime.combine(tw_date, datetime.max.time()) - timedelta(hours=8)
+
+    existing = await db.execute(
+        select(Attendance).where(
+            and_(
+                Attendance.employee_id == employee_id,
+                Attendance.check_type  == body.check_type,
+                Attendance.checked_at  >= day_start,
+                Attendance.checked_at  <= day_end,
+            )
+        )
+    )
+    if existing.scalars().first():
+        type_label = "上班" if body.check_type == CheckType.clock_in else "下班"
+        raise HTTPException(
+            status_code=409,
+            detail=f"{tw_date.strftime('%m/%d')} 已有{type_label}打卡紀錄，無需補打卡"
+        )
+
+    # 也檢查是否已有待審核或已通過的補打卡申請（同日同類型）
+    dup_req = await db.execute(
+        select(Override).where(
+            and_(
+                Override.employee_id == employee_id,
+                Override.check_type  == body.check_type,
+                Override.override_at >= day_start,
+                Override.override_at <= day_end,
+                Override.status.in_(["pending", "approved"]),
+            )
+        )
+    )
+    if dup_req.scalars().first():
+        type_label = "上班" if body.check_type == CheckType.clock_in else "下班"
+        raise HTTPException(
+            status_code=409,
+            detail=f"{tw_date.strftime('%m/%d')} 已有{type_label}補打卡申請，請勿重複送出"
+        )
+
     override = Override(
         employee_id=employee_id,
         check_type=body.check_type,
