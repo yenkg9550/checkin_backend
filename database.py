@@ -36,6 +36,13 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
         # Migration: add is_overtime column to schedules if not yet present
         if is_postgres:
+            # Override 補打卡申請狀態欄位
+            await conn.execute(text(
+                "ALTER TABLE overrides ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'approved'"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE overrides ADD COLUMN IF NOT EXISTS reject_reason VARCHAR(300)"
+            ))
             await conn.execute(text(
                 "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1"
             ))
@@ -56,6 +63,8 @@ async def init_db():
             ))
         else:
             for sql in [
+                "ALTER TABLE overrides ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'approved'",
+                "ALTER TABLE overrides ADD COLUMN reject_reason VARCHAR(300)",
                 "ALTER TABLE schedules ADD COLUMN is_overtime INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE employee_salary_configs ADD COLUMN overtime_min_minutes INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE positions ADD COLUMN overtime_min_minutes INTEGER NOT NULL DEFAULT 0",
