@@ -6,7 +6,8 @@ from typing import Optional
 from pydantic import BaseModel
 
 from database import get_db
-from models import Position, LeaveType, PositionLeaveType, EmployeeLeaveType, Employee, EmployeeSalaryConfig, LeaveRecord
+from models import Position, LeaveType, PositionLeaveType, EmployeeLeaveType, Employee, EmployeeSalaryConfig, LeaveRecord, LeaveRequest
+from schemas import LeaveRequestOut, LeaveRejectBody
 from utils.jwt_helper import require_admin
 
 router = APIRouter(prefix="/admin", tags=["positions"])
@@ -381,6 +382,96 @@ def _calc_annual_leave_days(hire_date) -> int:
     if years < 5:    return 14
     if years < 10:   return 15
     return min(15 + int(years - 10) + 1, 30)
+
+
+# ─────────────────────────── Admin Leave Requests ───────────────────────────
+
+@router.get("/leave-requests", response_model=list[LeaveRequestOut])
+async def list_leave_requests(
+    status: Optional[str] = None,
+    employee_id: Optional[int] = None,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """查詢員工請假申請列表"""
+    from datetime import timezone, timedelta
+    TZ_TW = timezone(timedelta(hours=8))
+    q = (
+        select(LeaveRequest, Employee.display_name, Employee.picture_url, LeaveType.name, LeaveType.color)
+        .join(Employee, LeaveRequest.employee_id == Employee.id)
+        .join(LeaveType, LeaveRequest.leave_type_id == LeaveType.id)
+        .order_by(LeaveRequest.created_at.desc())
+    )
+    if status:
+        q = q.where(LeaveRequest.status == status)
+    if employee_id:
+        q = q.where(LeaveRequest.employee_id == employee_id)
+    rows = (await db.execute(q)).all()
+    return [
+        LeaveRequestOut(
+            id=r.id, employee_id=r.employee_id,
+            display_name=name, picture_url=pic,
+            leave_type_id=r.leave_type_id,
+            leave_type_name=lt_name, leave_type_color=lt_color,
+            start_date=r.start_date, end_date=r.end_date,
+            days=r.days, reason=r.reason, status=r.status,
+            reject_reason=r.reject_reason,
+            created_at=r.created_at.replace(tzinfo=timezone.utc).astimezone(TZ_TW),
+        )
+        for r, name, pic, lt_name, lt_color in rows
+    ]
+
+
+@router.patch("/leave-requests/{req_id}/approve")
+async def approve_leave_request(
+    req_id: int,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """審核通過請假申請，自動建立 LeaveRecord 扣假"""
+    result = await db.execute(select(LeaveRequest).where(LeaveRequest.id == req_id))
+    req = result.scalar_one_or_none()
+    if not req:
+        raise HTTPException(status_code=404, detail="申請不存在")
+    if req.status != "pending":
+        raise HTTPException(status_code=400, detail="此申請已處理過")
+
+    # 建立 LeaveRecord（扣假）
+    record = LeaveRecord(
+        employee_id=req.employee_id,
+        leave_type_id=req.leave_type_id,
+        leave_date=req.start_date,
+        days=req.days,
+        note=f"請假申請 #{req.id}｜{req.start_date}～{req.end_date}",
+    )
+    db.add(record)
+    await db.flush()
+
+    req.status = "approved"
+    req.leave_record_id = record.id
+    await db.commit()
+    return {"success": True}
+
+
+@router.patch("/leave-requests/{req_id}/reject")
+async def reject_leave_request(
+    req_id: int,
+    body: LeaveRejectBody,
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """駁回請假申請"""
+    result = await db.execute(select(LeaveRequest).where(LeaveRequest.id == req_id))
+    req = result.scalar_one_or_none()
+    if not req:
+        raise HTTPException(status_code=404, detail="申請不存在")
+    if req.status != "pending":
+        raise HTTPException(status_code=400, detail="此申請已處理過")
+
+    req.status = "rejected"
+    req.reject_reason = body.reject_reason
+    await db.commit()
+    return {"success": True}
 
 
 # ─────────────────────────── Helpers ────────────────────────────────────────

@@ -36,6 +36,7 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
         # Migration: add is_overtime column to schedules if not yet present
         if is_postgres:
+            # leave_requests 表（新表，create_all 會處理；此處無需 ALTER）
             # Override 補打卡申請狀態欄位
             await conn.execute(text(
                 "ALTER TABLE overrides ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'approved'"

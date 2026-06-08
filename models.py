@@ -376,6 +376,27 @@ class PayrollDayOverride(Base):
     __table_args__ = (UniqueConstraint("payroll_record_id", "work_date"),)
 
 
+class LeaveRequest(Base):
+    """員工請假申請（待管理員審核）"""
+    __tablename__ = "leave_requests"
+
+    id:             Mapped[int]           = mapped_column(primary_key=True)
+    employee_id:    Mapped[int]           = mapped_column(ForeignKey("employees.id"))
+    leave_type_id:  Mapped[int]           = mapped_column(ForeignKey("leave_types.id"))
+    start_date:     Mapped[date]          = mapped_column(Date)
+    end_date:       Mapped[date]          = mapped_column(Date)
+    days:           Mapped[float]         = mapped_column(Float, default=1.0)
+    reason:         Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    # status: "pending" | "approved" | "rejected"
+    status:         Mapped[str]           = mapped_column(String(20), default="pending")
+    reject_reason:  Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    leave_record_id: Mapped[Optional[int]] = mapped_column(ForeignKey("leave_records.id"), nullable=True)
+    created_at:     Mapped[datetime]      = mapped_column(UTCDateTime, default=_utcnow)
+
+    employee:   Mapped["Employee"]  = relationship(foreign_keys=[employee_id])
+    leave_type: Mapped["LeaveType"] = relationship()
+
+
 class LeaveRecord(Base):
     """員工請假紀錄（假別使用明細）"""
     __tablename__ = "leave_records"

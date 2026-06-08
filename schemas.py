@@ -152,6 +152,39 @@ class OverrideApproveReject(BaseModel):
     reject_reason: Optional[str] = Field(None, max_length=30)
 
 
+# ── 請假申請 ──────────────────────────────────────────────────────────────────
+class LeaveRequestCreate(BaseModel):
+    leave_type_id: int
+    start_date: date
+    end_date: date
+    days: float = Field(..., gt=0)
+    reason: Optional[str] = Field(None, max_length=30)
+
+
+class LeaveRequestOut(BaseModel):
+    id: int
+    employee_id: int
+    display_name: str
+    picture_url: Optional[str]
+    leave_type_id: int
+    leave_type_name: str
+    leave_type_color: str
+    start_date: date
+    end_date: date
+    days: float
+    reason: Optional[str]
+    status: str
+    reject_reason: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LeaveRejectBody(BaseModel):
+    reject_reason: Optional[str] = Field(None, max_length=30)
+
+
 class OverrideRequestOut(BaseModel):
     id: int
     employee_id: int

@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from datetime import datetime, date as date_cls, timezone, timedelta
 from database import get_db
-from models import Attendance, Employee, CheckType, SystemSettings, Schedule, Shift, Override
-from schemas import CheckInRequest, AttendanceRecord, OverrideRequestCreate, OverrideRequestOut
+from models import Attendance, Employee, CheckType, SystemSettings, Schedule, Shift, Override, LeaveRequest, LeaveRecord, EmployeeLeaveType, LeaveType
+from schemas import CheckInRequest, AttendanceRecord, OverrideRequestCreate, OverrideRequestOut, LeaveRequestCreate, LeaveRequestOut
 from utils.jwt_helper import get_current_user
 from utils.gps import haversine_distance
 from config import settings
@@ -393,6 +393,140 @@ async def my_override_requests(
             created_at=ov.created_at.replace(tzinfo=timezone.utc).astimezone(TZ_TW),
         )
         for ov, name, pic in rows
+    ]
+
+
+@router.get("/my-leave-types")
+async def my_leave_types(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """員工查詢自己可用的假別及剩餘天數"""
+    from sqlalchemy import func, extract
+    employee_id = int(user["sub"])
+    year = datetime.now(timezone(timedelta(hours=8))).year
+
+    lt_res = await db.execute(
+        select(EmployeeLeaveType.leave_type_id).where(EmployeeLeaveType.employee_id == employee_id)
+    )
+    lt_ids = [r[0] for r in lt_res.all()]
+    if not lt_ids:
+        return []
+
+    lts_res = await db.execute(select(LeaveType).where(LeaveType.id.in_(lt_ids)))
+    lts = {lt.id: lt for lt in lts_res.scalars().all()}
+
+    used_res = await db.execute(
+        select(LeaveRecord.leave_type_id, func.sum(LeaveRecord.days))
+        .where(
+            LeaveRecord.employee_id == employee_id,
+            extract('year', LeaveRecord.leave_date) == year,
+        )
+        .group_by(LeaveRecord.leave_type_id)
+    )
+    used_map = {r[0]: float(r[1]) for r in used_res.all()}
+
+    emp = await db.get(Employee, employee_id)
+    hire_date = emp.hire_date if emp else None
+
+    def _annual_days(hd) -> int:
+        from datetime import date as d_cls
+        today = d_cls.today()
+        years = (today - hd).days / 365.25
+        if years < 0.5:  return 0
+        if years < 1:    return 3
+        if years < 2:    return 7
+        if years < 3:    return 10
+        if years < 5:    return 14
+        if years < 10:   return 15
+        return min(15 + int(years - 10) + 1, 30)
+
+    out = []
+    for lt_id in lt_ids:
+        lt = lts.get(lt_id)
+        if not lt:
+            continue
+        used = used_map.get(lt_id, 0.0)
+        max_d = lt.max_days
+        if lt.name == "特休" and hire_date:
+            max_d = _annual_days(hire_date)
+        out.append({
+            "leave_type_id": lt_id,
+            "name": lt.name,
+            "color": lt.color,
+            "is_paid": lt.is_paid,
+            "max_days": max_d,
+            "used_days": used,
+            "remaining": round((max_d - used), 1) if max_d and max_d > 0 else None,
+        })
+    return out
+
+
+@router.post("/leave-request", status_code=201)
+async def submit_leave_request(
+    body: LeaveRequestCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """員工提交請假申請"""
+    employee_id = int(user["sub"])
+
+    if body.end_date < body.start_date:
+        raise HTTPException(status_code=400, detail="結束日期不能早於開始日期")
+
+    # 確認假別在員工可用清單內
+    elt = await db.execute(
+        select(EmployeeLeaveType).where(
+            EmployeeLeaveType.employee_id == employee_id,
+            EmployeeLeaveType.leave_type_id == body.leave_type_id,
+        )
+    )
+    if not elt.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="此假別不在您的可用假別中")
+
+    req = LeaveRequest(
+        employee_id=employee_id,
+        leave_type_id=body.leave_type_id,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        days=body.days,
+        reason=body.reason,
+        status="pending",
+    )
+    db.add(req)
+    await db.commit()
+    await db.refresh(req)
+    return {"id": req.id, "status": "pending"}
+
+
+@router.get("/leave-requests", response_model=list[LeaveRequestOut])
+async def my_leave_requests(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """員工查詢自己的請假申請"""
+    employee_id = int(user["sub"])
+    result = await db.execute(
+        select(LeaveRequest, Employee.display_name, Employee.picture_url, LeaveType.name, LeaveType.color)
+        .join(Employee, LeaveRequest.employee_id == Employee.id)
+        .join(LeaveType, LeaveRequest.leave_type_id == LeaveType.id)
+        .where(LeaveRequest.employee_id == employee_id)
+        .order_by(LeaveRequest.created_at.desc())
+        .limit(30)
+    )
+    TZ_TW = timezone(timedelta(hours=8))
+    return [
+        LeaveRequestOut(
+            id=r.id, employee_id=r.employee_id,
+            display_name=name, picture_url=pic,
+            leave_type_id=r.leave_type_id,
+            leave_type_name=lt_name, leave_type_color=lt_color,
+            start_date=r.start_date, end_date=r.end_date,
+            days=r.days, reason=r.reason, status=r.status,
+            reject_reason=r.reject_reason,
+            created_at=r.created_at.replace(tzinfo=timezone.utc).astimezone(TZ_TW),
+        )
+        for r, name, pic, lt_name, lt_color in result.all()
     ]
 
 
