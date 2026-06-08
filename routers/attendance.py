@@ -376,7 +376,6 @@ async def my_override_requests(
         .join(Employee, Override.employee_id == Employee.id)
         .where(Override.employee_id == employee_id)
         .order_by(Override.created_at.desc())
-        .limit(30)
     )
     rows = result.all()
     return [
@@ -512,7 +511,6 @@ async def my_leave_requests(
         .join(LeaveType, LeaveRequest.leave_type_id == LeaveType.id)
         .where(LeaveRequest.employee_id == employee_id)
         .order_by(LeaveRequest.created_at.desc())
-        .limit(30)
     )
     TZ_TW = timezone(timedelta(hours=8))
     return [
