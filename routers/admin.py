@@ -10,7 +10,12 @@ from passlib.context import CryptContext
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from database import get_db
-from models import Attendance, Employee, Override, CheckType, SystemSettings, AdminUser, PayrollRecord
+from models import (
+    Attendance, Employee, Override, CheckType, SystemSettings, AdminUser, PayrollRecord,
+    EmployeeSalaryConfig, ShiftSalaryConfig, PayrollDayOverride,
+    Position, Schedule, Shift, LeaveType, PositionLeaveType, EmployeeLeaveType,
+    LeaveRequest, LeaveRecord,
+)
 from schemas import (
     AttendanceWithUser, OverrideRequest, EmployeeOut,
     SystemSettingsOut, SystemSettingsUpdate,
@@ -848,3 +853,36 @@ async def clear_all_attendance(
     await db.execute(delete(Attendance))
     await db.commit()
     return {"success": True, "message": "所有打卡記錄已清除"}
+
+
+@router.post("/reset-all", status_code=200)
+async def reset_all_data(
+    admin: dict = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    清除所有業務資料（僅 super_admin 可執行）。
+    保留：admin_users、system_settings。
+    刪除：打卡紀錄、薪資設定與紀錄、排班、假別、職位、員工。
+    """
+    # 依 FK 順序：子表先刪
+    await db.execute(delete(PayrollDayOverride))
+    await db.execute(delete(LeaveRequest))
+    await db.execute(delete(LeaveRecord))
+    await db.execute(delete(EmployeeLeaveType))
+    await db.execute(delete(PositionLeaveType))
+    await db.execute(delete(PayrollRecord))
+    await db.execute(delete(EmployeeSalaryConfig))
+    await db.execute(delete(ShiftSalaryConfig))
+    await db.execute(delete(Schedule))
+    await db.execute(delete(Override))
+    await db.execute(delete(Attendance))
+    # 解除 employees.position_id 循環 FK 再刪
+    from sqlalchemy import text
+    await db.execute(text("UPDATE employees SET position_id = NULL"))
+    await db.execute(delete(Employee))
+    await db.execute(delete(Position))
+    await db.execute(delete(Shift))
+    await db.execute(delete(LeaveType))
+    await db.commit()
+    return {"success": True, "message": "所有業務資料已清除"}
