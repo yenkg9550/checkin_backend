@@ -23,6 +23,7 @@ from schemas import (
     OverrideRequestOut, OverrideApproveReject,
 )
 from utils.jwt_helper import require_admin, require_super_admin
+from seed_test_data import seed_demo_employees
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -853,6 +854,18 @@ async def clear_all_attendance(
     await db.execute(delete(Attendance))
     await db.commit()
     return {"success": True, "message": "所有打卡記錄已清除"}
+
+
+@router.post("/seed-test-data", status_code=200)
+async def seed_test_data_endpoint(
+    admin: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    新增測試資料（林佳穎、張志強兩位員工 + 日班/晚班 + 排班 + 打卡紀錄）。
+    僅供隱藏頁面「加入測試資料」按鈕使用；若資料已存在則不重複新增。
+    """
+    return await seed_demo_employees(db)
 
 
 @router.post("/reset-all", status_code=200)

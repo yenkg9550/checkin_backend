@@ -7,21 +7,20 @@ LINE 打卡系統的後端 API，使用 FastAPI + SQLAlchemy（async）+ Postgre
 - Python 3.11+、FastAPI、SQLAlchemy 2.0（async）、asyncpg
 - Passlib + bcrypt、python-jose（JWT）、openpyxl
 
-## 快速開始
-
-```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
-```
-
-## Docker（本機）
+## 快速開始（Docker，本機開發統一用這個）
 
 ```bash
 cd ..   # 到 checkIn 根目錄
 docker compose up -d --build
+```
+
+`docker-compose.yml` 會啟動 PostgreSQL（`db` 服務）與本服務（`backend`），並自動把
+`DATABASE_URL` 覆蓋成 PostgreSQL 連線字串。
+
+查看 log：
+
+```bash
+docker compose logs -f backend
 ```
 
 ## 環境變數
